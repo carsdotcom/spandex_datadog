@@ -12,13 +12,17 @@ defmodule SpandexDatadog.Adapter do
     Tracer
   }
 
+  import Bitwise
+
+  # 2 shifted left by 127 == 2 ^ 128
+  @max_trace_id (2 <<< 127) - 1
   @max_id 9_223_372_036_854_775_807
 
   @impl Spandex.Adapter
-  def trace_id(), do: :rand.uniform(@max_id)
+  def trace_id(), do: :rand.uniform(@max_trace_id)
 
   @impl Spandex.Adapter
-  def span_id(), do: trace_id()
+  def span_id(), do: :rand.uniform(@max_id)
 
   @impl Spandex.Adapter
   def now(), do: :os.system_time(:nano_seconds)
@@ -40,6 +44,22 @@ defmodule SpandexDatadog.Adapter do
     trace_id = get_first_header(conn, "x-datadog-trace-id")
     parent_id = get_first_header(conn, "x-datadog-parent-id")
     priority = get_first_header(conn, "x-datadog-sampling-priority") || 1
+
+    if is_nil(trace_id) || is_nil(parent_id) do
+      {:error, :no_distributed_trace}
+    else
+      {:ok, %SpanContext{trace_id: trace_id, parent_id: parent_id, priority: priority}}
+    end
+  end
+
+  @impl Spandex.Adapter
+  @spec distributed_context(headers :: Spandex.headers(), Tracer.opts()) ::
+          {:ok, SpanContext.t()}
+          | {:error, :no_distributed_trace}
+  def distributed_context(headers, _opts) do
+    trace_id = get_header(headers, "x-datadog-trace-id")
+    parent_id = get_header(headers, "x-datadog-parent-id")
+    priority = get_header(headers, "x-datadog-sampling-priority") || 1
 
     if is_nil(trace_id) || is_nil(parent_id) do
       {:error, :no_distributed_trace}
@@ -73,6 +93,18 @@ defmodule SpandexDatadog.Adapter do
     conn
     |> Plug.Conn.get_req_header(header_name)
     |> List.first()
+    |> parse_header()
+  end
+
+  @spec get_header(%{}, String.t()) :: integer() | nil
+  defp get_header(headers, key) when is_map(headers) do
+    Map.get(headers, key, nil)
+    |> parse_header()
+  end
+
+  @spec get_header([], String.t()) :: integer() | nil
+  defp get_header(headers, key) when is_list(headers) do
+    Enum.find_value(headers, fn {k, v} -> if k == key, do: v end)
     |> parse_header()
   end
 
